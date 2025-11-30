@@ -79,6 +79,37 @@ const POWER_RECIPES_DATA = {
                 "MWm": 250.0
             }
         }
+    },
+    "Nuclear Power Plant": {
+        "Power (Uranium)": {
+            "in": {
+                "Uranium Fuel Rod": 0.2,
+                "Water": 240.0
+            },
+            "out": {
+                "MWm": 2500.0,
+                "Uranium Waste": 10.0
+            }
+        },
+        "Power (Plutonium)": {
+            "in": {
+                "Plutonium Fuel Rod": 0.1,
+                "Water": 240.0
+            },
+            "out": {
+                "MWm": 2500.0,
+                "Plutonium Waste": 1.0
+            }
+        },
+        "Power (Ficsonium)": {
+            "in": {
+                "Ficsonium Fuel Rod": 1,
+                "Water": 240.0
+            },
+            "out": {
+                "MWm": 2500.0
+            }
+        }
     }
 };
 

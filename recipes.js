@@ -7,6 +7,7 @@ import { RECIPES_DATA } from './data/recipes-data.js';
 import { POWER_RECIPES_DATA } from './data/power-recipes-data.js';
 import { LOADS_DATA } from './data/loads-data.js';
 import { FLUIDS_DATA } from './data/fluids-data.js';
+import { PROJECT_ASSEMBLY_PARTS } from './data/project-assembly-data.js';
 
 // ============================================================================
 // Constants
@@ -96,6 +97,9 @@ const _SCHEMATIC_RECIPES_LOOKUP = {};
 // set of recipe names that don't appear in any schematic unlock list
 const _UNLISTED_RECIPES = new Set();
 
+// set of parts extracted by automated buildings (miners, pumps, extractors)
+const _EXTRACTED_PARTS = new Set();
+
 // ============================================================================
 // Helper functions for initialization
 // ============================================================================
@@ -171,12 +175,14 @@ function _register_recipe(recipe, recipe_name, machine) {
     _RECIPE_NAMES.set(recipe, recipe_name);
 }
 
-function _is_miner_output(part) {
+/**
+ * Build the set of parts extracted by automated buildings.
+ */
+function _build_extracted_parts() {
     for (const miner of Object.values(RECIPES_DATA.miners)) {
         for (const resource of miner.allowedResources) {
-            if (RECIPES_DATA.items[resource].name === part) {
-                return true;
-            }
+            const partName = RECIPES_DATA.items[resource].name;
+            _EXTRACTED_PARTS.add(partName);
         }
     }
 }
@@ -187,21 +193,7 @@ function _is_miner_output(part) {
  * @returns {boolean} true if part is a base part
  */
 function _is_base_part(part) {
-    if (!(part in _BY_OUTPUT)) {
-        return true;
-    }
-    if (_is_miner_output(part)) {
-        return true;
-    }
-    // check if all recipes that output this part have no inputs
-    for (const recipe of Object.values(_ALL_RECIPES)) {
-        if (part in recipe.outputs) {
-            if (Object.keys(recipe.inputs).length > 0) {
-                return false;
-            }
-        }
-    }
-    return true;
+    return !(part in _BY_OUTPUT) || (_EXTRACTED_PARTS.has(part));
 }
 
 /**
@@ -471,6 +463,7 @@ function _populate_lookups() {
         }
     }
     
+    _build_extracted_parts();
     _classify_parts();
     _build_default_enablement_set();
     _build_material_name_lookup();
@@ -612,12 +605,40 @@ function get_recipe_for(output, enablement_set = null) {
 }
 
 /**
+ * Get all recipes that consume a given input material.
+ * @param {string} input - input material name
+ * @param {Set<string>|null} enablement_set - set of enabled recipe names or null for all enabled
+ * @returns {Array<[string, Recipe]>} array of [recipe_name, recipe] tuples that consume this input
+ */
+function get_recipes_using(input, enablement_set = null) {
+    const results = [];
+    
+    for (const [recipe_name, recipe] of Object.entries(_ALL_RECIPES)) {
+        if (_is_recipe_enabled(recipe_name, enablement_set)) {
+            if (input in recipe.inputs) {
+                results.push([recipe_name, recipe]);
+            }
+        }
+    }
+    
+    return results;
+}
+
+/**
  * Find the name of a given Recipe object.
  * @param {Recipe} recipe - Recipe object
  * @returns {string|undefined} recipe name or undefined if not found
  */
 function find_recipe_name(recipe) {
     return _RECIPE_NAMES.get(recipe);
+}
+
+/**
+ * Get all unique parts from recipes.
+ * @returns {Set<string>} set of all unique part names appearing in inputs or outputs
+ */
+function get_all_parts() {
+    return new Set(_ALL_PARTS);
 }
 
 /**
@@ -634,6 +655,269 @@ function get_base_parts() {
  */
 function get_terminal_parts() {
     return new Set(_TERMINAL_PARTS);
+}
+
+/**
+ * Get all parts that are extracted by automated buildings (miners, pumps, extractors).
+ * @returns {Set<string>} set of parts extracted by miners, oil extractors, water extractors, and resource well extractors
+ */
+function get_extracted_parts() {
+    return new Set(_EXTRACTED_PARTS);
+}
+
+/**
+ * Get all parts that must be manually gathered by the player (foraged).
+ * @returns {Set<string>} set of base parts that are not extracted by automated buildings
+ */
+function get_foraged_parts() {
+    return _BASE_PARTS.difference(_EXTRACTED_PARTS);
+}
+
+/**
+ * Get all parts that depend on foraged parts (cannot be made without foraged materials).
+ * Returns all parts where every recipe producing them requires foraged parts as inputs,
+ * either directly or transitively through other forage-dependent parts.
+ * @returns {Set<string>} set of parts that require foraged materials
+ */
+function get_forage_dependent_parts() {
+    const foragedParts = get_foraged_parts();
+    const extractedParts = get_extracted_parts();
+    
+    // Start with base materials that can be obtained without foraging
+    const availableWithoutForaging = new Set([...extractedParts]);
+    
+    // Iteratively add parts that can be made without any foraged inputs
+    let changed = true;
+    while (changed) {
+        changed = false;
+        
+        for (const part of _ALL_PARTS) {
+            if (availableWithoutForaging.has(part) || foragedParts.has(part)) {
+                continue;
+            }
+            
+            // Check if this part has any recipe using only non-forage materials
+            const recipesFor = get_recipes_for(part);
+            let hasNonForageRecipe = false;
+            
+            for (const recipes of Object.values(recipesFor)) {
+                for (const [, recipe] of recipes) {
+                    // Check if all inputs are available without foraging
+                    const allInputsAvailable = Object.keys(recipe.inputs).every(
+                        input => availableWithoutForaging.has(input)
+                    );
+                    
+                    if (allInputsAvailable) {
+                        hasNonForageRecipe = true;
+                        break;
+                    }
+                }
+                if (hasNonForageRecipe) break;
+            }
+            
+            if (hasNonForageRecipe) {
+                availableWithoutForaging.add(part);
+                changed = true;
+            }
+        }
+    }
+    
+    // Return parts that are NOT available without foraging (excluding base parts)
+    const forageDependentParts = new Set();
+    for (const part of _ALL_PARTS) {
+        if (!availableWithoutForaging.has(part) && !foragedParts.has(part)) {
+            forageDependentParts.add(part);
+        }
+    }
+    
+    return forageDependentParts;
+}
+
+/**
+ * Get all project assembly parts.
+ * @returns {Set<string>} set of project assembly part names
+ */
+function get_project_assembly_parts() {
+    return new Set(PROJECT_ASSEMBLY_PARTS);
+}
+
+/**
+ * Get all ammo parts.
+ * @returns {Set<string>} set of ammo part names
+ */
+function get_ammo_parts() {
+    const ammoParts = new Set();
+    for (const part of _ALL_PARTS) {
+        if (!part.includes('Rebar Gun') &&
+            (part.includes('Ammo') || 
+             part.includes('Nobelisk') || 
+             part.includes('Rebar'))) {
+            ammoParts.add(part);
+        }
+    }
+    return ammoParts;
+}
+
+function get_ingots() {
+    const ingots = new Set();
+    for (const part of _ALL_PARTS) {
+        if (part.includes('Ingot')) {
+            ingots.add(part);
+        }
+    }
+    return ingots;
+}
+
+function get_packaged_fluids() {
+    const packagedFluids = new Set();
+    for (const part of _ALL_PARTS) {
+        if (part.includes('Packaged')) {
+            packagedFluids.add(part);
+        }
+    }
+    return packagedFluids;
+}
+
+/**
+ * Get all parts that are worth accumulating from factory outputs.
+ *   - project assembly parts
+ *   - ammo
+ *   - parts used as input in the creation of more than one kind of output part (not if its used to make just one thing)
+ *   - not base parts
+ *   - not electricity
+ *   - not ingots
+ *   - not fluids, except packaged fuel and packaged ionized fuel
+ *   - not foraged parts, or parts that require foraged parts as inputs (recursively)
+ * @returns {Set<string>} set of parts worth accumulating
+**/
+function get_strategic_solids(include_rebar = false) {
+    const baseParts = get_base_parts();
+    const extractedParts = get_extracted_parts();
+    const foragedParts = get_foraged_parts();
+    const forageDependentParts = get_forage_dependent_parts();
+    const projectAssemblyParts = get_project_assembly_parts();
+    const ammoParts = get_ammo_parts();
+    const fluids = new Set(get_fluids()).union(get_packaged_fluids());
+    const ingots = new Set(get_ingots());
+    const allowedFluids = new Set(['Packaged Fuel', 'Packaged Ionized Fuel']);
+    
+    const results = new Set();
+    
+    for (const part of _ALL_PARTS) {
+        // Skip if base part
+        if (baseParts.has(part)) continue;
+
+        // Skip if electricity
+        if (part == "MWm") continue;
+        
+        // Skip if mined or extracted
+        if (extractedParts.has(part)) continue;
+        
+        // Skip if foraged or requires foraged parts
+        if (foragedParts.has(part) || forageDependentParts.has(part)) continue;
+        
+        // Skip if fluid (unless specifically allowed)
+        if (fluids.has(part) && !allowedFluids.has(part)) continue;
+        
+        // Skip if ingot
+        if (ingots.has(part)) continue;
+
+        // Skip if rebar
+        if (!include_rebar && part.includes('Rebar')) continue;
+
+        // Include if project assembly part
+        if (projectAssemblyParts.has(part)) {
+            results.add(part);
+            continue;
+        }
+        
+        // Include if ammo
+        if (ammoParts.has(part)) {
+            results.add(part);
+            continue;
+        }
+        
+        // Include if used as input in the creation of more than one kind of output part
+        const recipesUsing = get_recipes_using(part);
+        const outputParts = new Set();
+        for (const [, recipe] of recipesUsing) {
+            for (const outputPart of Object.keys(recipe.outputs)) {
+                outputParts.add(outputPart);
+            }
+        }
+        if (outputParts.size > 1) {
+            results.add(part);
+        }
+    }
+    
+    return results;
+}
+
+/**
+ * Get all parts that are worth routing to factory inputs from factory outputs.
+ *   - parts used as input in the creation of more than one kind of output part (not if its used to make just one thing)
+ *   - not base parts
+ *   - not electricity
+ *   - not ingots
+ *   - not fluids, except packaged fuel and packaged ionized fuel
+ *   - not foraged parts, or parts that require foraged parts as inputs (recursively)
+ * @returns {Set<string>} set of parts worth accumulating
+**/
+function get_portable_intermediates() {
+    const baseParts = get_base_parts();
+    const extractedParts = get_extracted_parts();
+    const foragedParts = get_foraged_parts();
+    const forageDependentParts = get_forage_dependent_parts();
+    const ammoParts = get_ammo_parts();
+    const fluids = new Set(get_fluids()).union(get_packaged_fluids());
+    const results = new Set();
+    
+    for (const part of _ALL_PARTS) {
+        // Skip if base part
+        if (baseParts.has(part)) continue;
+
+        // Skip if electricity
+        if (part == "MWm") continue;
+        
+        // Skip if mined or extracted
+        if (extractedParts.has(part)) continue;
+        
+        // Skip if foraged or requires foraged parts
+        if (foragedParts.has(part) || forageDependentParts.has(part)) continue;
+        
+        // Skip if fluid (unless specifically allowed)
+        if (fluids.has(part)) continue;
+        
+        // Skip if ingot
+        if (ingots.has(part)) continue;
+
+        // Skip if ammo
+        if (ammoParts.has(part)) continue;
+
+        // Include if used as input in the creation of more than one kind of output part
+        const recipesUsing = get_recipes_using(part);
+        const outputParts = new Set();
+        for (const [, recipe] of recipesUsing) {
+            for (const outputPart of Object.keys(recipe.outputs)) {
+                outputParts.add(outputPart);
+            }
+        }
+        if (outputParts.size > 1) {
+            results.add(part);
+        }
+    }
+    
+    return results;
+}
+
+function get_single_use_intermediates() {
+    let result = new Set(get_all_parts());
+    result = result.difference(get_base_parts());
+    result = result.difference(get_strategic_solids());
+    result = result.difference(get_portable_intermediates());
+    result = result.difference(get_ammo_parts());
+    result.delete('MWm');    
+    return result;
 }
 
 /**
@@ -715,9 +999,20 @@ export {
     get_all_recipes,
     get_recipes_for,
     get_recipe_for,
+    get_recipes_using,
     find_recipe_name,
+    get_all_parts,
     get_base_parts,
     get_terminal_parts,
+    get_extracted_parts,
+    get_foraged_parts,
+    get_forage_dependent_parts,
+    get_project_assembly_parts,
+    get_ammo_parts,
+    get_packaged_fluids,
+    get_strategic_solids,
+    get_portable_intermediates,
+    get_single_use_intermediates,
     get_default_enablement_set,
     get_fluids,
     get_fluid_color,

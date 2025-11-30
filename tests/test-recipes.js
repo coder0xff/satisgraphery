@@ -12,9 +12,13 @@ import {
     get_all_recipes,
     get_recipes_for,
     get_recipe_for,
+    get_recipes_using,
     find_recipe_name,
     get_base_parts,
     get_terminal_parts,
+    get_foraged_parts,
+    get_forage_dependent_parts,
+    get_strategic_solids,
     get_default_enablement_set,
     get_fluids,
     get_fluid_color,
@@ -241,6 +245,104 @@ describe('Recipes', () => {
         if (!base_parts.has("Copper Ore")) throw new Error('Missing Copper Ore');
     });
 
+    it('test_get_foraged_parts: foraged parts should not include waste materials', () => {
+        const foraged = get_foraged_parts();
+        
+        assert.ok(foraged instanceof Set);
+        assert.ok(foraged.size > 0);
+        
+        // Waste materials should not be in foraged parts
+        if (foraged.has("Uranium Waste")) throw new Error('Uranium Waste should not be foraged');
+        if (foraged.has("Plutonium Waste")) throw new Error('Plutonium Waste should not be foraged');
+        if (foraged.has("Excited Photonic Matter")) throw new Error('Excited Photonic Matter should not be foraged');
+    });
+
+    it('test_get_forage_dependent_parts: should identify parts requiring foraged materials', () => {
+        const forageDependentParts = get_forage_dependent_parts();
+        
+        assert.ok(forageDependentParts instanceof Set);
+        
+        // Biomass requires foraged materials (Leaves, Wood, Mycelia)
+        if (!forageDependentParts.has("Biomass")) throw new Error('Biomass should be forage-dependent');
+        
+        // Solid Biofuel requires Biomass which requires foraged materials
+        if (!forageDependentParts.has("Solid Biofuel")) throw new Error('Solid Biofuel should be forage-dependent');
+        
+        // Iron Ore and Iron Ingot should NOT be forage-dependent
+        if (forageDependentParts.has("Iron Ore")) throw new Error('Iron Ore should not be forage-dependent');
+        if (forageDependentParts.has("Iron Ingot")) throw new Error('Iron Ingot should not be forage-dependent');
+    });
+
+    it('test_get_recipes_using: should find recipes that consume a given input', () => {
+        const ironOreRecipes = get_recipes_using("Iron Ore");
+        
+        assert.ok(Array.isArray(ironOreRecipes));
+        assert.ok(ironOreRecipes.length > 0);
+        
+        // Check structure
+        const [recipeName, recipe] = ironOreRecipes[0];
+        if (typeof recipeName !== 'string') throw new Error('Recipe name should be string');
+        if (!(recipe instanceof Recipe)) throw new Error('Recipe should be Recipe instance');
+        if (!("Iron Ore" in recipe.inputs)) throw new Error('Recipe should have Iron Ore as input');
+    });
+
+    it('test_get_recipes_using_with_enablement: should respect enablement set', () => {
+        const enablementSet = new Set(["Iron Ingot"]);
+        const ironOreRecipes = get_recipes_using("Iron Ore", enablementSet);
+        
+        // Should only include the enabled recipe
+        assert.ok(ironOreRecipes.length >= 1);
+        
+        // All returned recipes should be in the enablement set
+        for (const [recipeName, ] of ironOreRecipes) {
+            if (!enablementSet.has(recipeName)) {
+                throw new Error(`Recipe ${recipeName} should not be in results with enablement set`);
+            }
+        }
+    });
+
+    it('test_get_strategic_solids: should identify parts worth accumulating', () => {
+        const strategicSolids = get_strategic_solids();
+        
+        assert.ok(strategicSolids instanceof Set);
+        assert.ok(strategicSolids.size > 0);
+        
+        // Should include project assembly parts
+        if (!strategicSolids.has("Nuclear Pasta")) {
+            throw new Error('Should include project assembly part: Nuclear Pasta');
+        }
+        
+        // Should include ammo
+        if (!strategicSolids.has("Nobelisk")) {
+            throw new Error('Should include ammo: Nobelisk');
+        }
+        
+        // Should NOT include base parts
+        if (strategicSolids.has("Iron Ore")) {
+            throw new Error('Should not include base part: Iron Ore');
+        }
+        
+        // Should NOT include foraged parts
+        if (strategicSolids.has("Leaves")) {
+            throw new Error('Should not include foraged part: Leaves');
+        }
+        
+        // Should NOT include forage-dependent parts
+        if (strategicSolids.has("Biomass")) {
+            throw new Error('Should not include forage-dependent part: Biomass');
+        }
+        
+        // Should NOT include most fluids
+        if (strategicSolids.has("Water")) {
+            throw new Error('Should not include fluid: Water');
+        }
+        
+        // Should include allowed packaged fluids
+        if (!strategicSolids.has("Packaged Fuel")) {
+            throw new Error('Should include allowed packaged fluid: Packaged Fuel');
+        }
+    });
+
     it('test_recipe_lookups_consistency: recipe lookups should be internally consistent', () => {
         // Get all recipes
         const all_recipes = get_all_recipes();
@@ -274,7 +376,7 @@ describe('Recipes', () => {
         assert.ok(recipe.outputs.MWm > 0);
         
         // Verify it's from a known power generator
-        const powerMachines = ['Biomass Burner', 'Coal-Powered Generator', 'Fuel-Powered Generator'];
+        const powerMachines = ['Biomass Burner', 'Coal-Powered Generator', 'Fuel-Powered Generator', 'Nuclear Power Plant'];
         if (!powerMachines.includes(recipe.machine)) {
             throw new Error(`Expected power generator, got: ${recipe.machine}`);
         }
